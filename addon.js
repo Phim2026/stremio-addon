@@ -244,5 +244,6 @@ builder.defineStreamHandler(async (args) => {
 // =========================
 
 serveHTTP(builder.getInterface(), {
-    port: process.env.PORT || 7000
+    port: Number(process.env.PORT) || 7000,
+    host: "0.0.0.0"
 });
