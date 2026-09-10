@@ -5,231 +5,152 @@ export default async function handler(req, res) {
 
     const url = req.url || '';
 
-    // =========================
-    // 1. MANIFEST
-    // =========================
+    // MANIFEST
     if (url === '/' || url.endsWith('/manifest.json')) {
         return res.status(200).json({
             id: "com.nguonc.customaddon",
-            version: "1.1.0",
+            version: "1.2.0",
             name: "Addon NguonC Tự Làm",
-            description: "NguonC chạy qua Vercel cá nhân",
+            description: "NguonC chạy qua Vercel",
             resources: ["stream"],
             types: ["movie", "series"],
             idPrefixes: ["tt"]
         });
     }
 
-    // =========================
-    // 2. STREAM
-    // =========================
+    // STREAM
     if (url.includes('/stream/')) {
 
         const parts = url.split('/');
-
-        // Ví dụ:
-        // /stream/movie/tt123456.json
-        // /stream/series/tt123456:1:2.json
-
         const type = parts[parts.indexOf('stream') + 1];
 
         const idParam = parts[parts.length - 1]
             .replace('.json', '');
 
         const idParts = idParam.split(':');
-
         const imdbId = idParts[0];
-
-        const season = idParts[1] || null;
-        const episode = idParts[2] || null;
-
-        let streams = [];
+        const episodeNumber = idParts[2] || null;
 
         try {
-
-            // =========================
-            // LẤY TÊN PHIM TỪ CINEMETA
-            // =========================
-
-            const metaUrl =
-                `https://v3-cinemeta.strem.io/meta/${type}/${imdbId}.json`;
-
-            const metaResponse = await fetch(metaUrl);
+            // Lấy tên phim từ Cinemeta
+            const metaResponse = await fetch(
+                `https://v3-cinemeta.strem.io/meta/${type}/${imdbId}.json`
+            );
 
             if (!metaResponse.ok) {
-                throw new Error(
-                    `Cinemeta error: ${metaResponse.status}`
-                );
+                return res.status(200).json({ streams: [] });
             }
 
             const metaData = await metaResponse.json();
-
             const movieName = metaData?.meta?.name;
 
             if (!movieName) {
-                throw new Error("Không lấy được tên phim từ Cinemeta");
+                return res.status(200).json({ streams: [] });
             }
 
-            // =========================
-            // TÌM PHIM TRÊN NGUONC
-            // =========================
-
-            const searchUrl =
-                `https://phim.nguonc.com/api/films/search?keyword=${encodeURIComponent(movieName)}`;
-
-            const searchResponse = await fetch(searchUrl);
+            // Tìm phim trên NguonC
+            const searchResponse = await fetch(
+                `https://phim.nguonc.com/api/films/search?keyword=${encodeURIComponent(movieName)}`
+            );
 
             if (!searchResponse.ok) {
-                throw new Error(
-                    `NguonC search error: ${searchResponse.status}`
-                );
+                return res.status(200).json({ streams: [] });
             }
 
             const searchData = await searchResponse.json();
-
             const items = searchData?.items || [];
 
             if (!items.length) {
-                return res.status(200).json({
-                    streams: []
-                });
+                return res.status(200).json({ streams: [] });
             }
 
-            // =========================
-            // CHỌN KẾT QUẢ PHÙ HỢP NHẤT
-            // =========================
+            // Ưu tiên tên tiếng Anh / tên gốc trùng
+            const normalized = movieName.toLowerCase().trim();
 
-            let selectedMovie = items[0];
+            let selected = items.find(item =>
+                (item.original_name || '').toLowerCase().trim() === normalized
+            );
 
-            const normalizedName = movieName
-                .toLowerCase()
-                .replace(/[^\p{L}\p{N}]+/gu, ' ')
-                .trim();
-
-            const exactMatch = items.find(item => {
-
-                const name =
-                    (item.name || '')
-                        .toLowerCase()
-                        .replace(/[^\p{L}\p{N}]+/gu, ' ')
-                        .trim();
-
-                const origin =
-                    (item.origin_name || '')
-                        .toLowerCase()
-                        .replace(/[^\p{L}\p{N}]+/gu, ' ')
-                        .trim();
-
-                return (
-                    name === normalizedName ||
-                    origin === normalizedName
+            if (!selected) {
+                selected = items.find(item =>
+                    (item.name || '').toLowerCase().trim() === normalized
                 );
-            });
-
-            if (exactMatch) {
-                selectedMovie = exactMatch;
             }
 
-            const slug = selectedMovie.slug;
-
-            if (!slug) {
-                throw new Error("Không tìm thấy slug phim trên NguonC");
+            if (!selected) {
+                selected = items[0];
             }
 
-            // =========================
-            // LẤY CHI TIẾT PHIM
-            // =========================
+            if (!selected.slug) {
+                return res.status(200).json({ streams: [] });
+            }
 
-            const detailUrl =
-                `https://phim.nguonc.com/api/film/${encodeURIComponent(slug)}`;
-
-            const detailResponse = await fetch(detailUrl);
+            // Lấy chi tiết phim
+            const detailResponse = await fetch(
+                `https://phim.nguonc.com/api/film/${selected.slug}`
+            );
 
             if (!detailResponse.ok) {
-                throw new Error(
-                    `NguonC detail error: ${detailResponse.status}`
-                );
+                return res.status(200).json({ streams: [] });
             }
 
             const detailData = await detailResponse.json();
+            const episodes = detailData?.movie?.episodes || [];
 
-            const movie = detailData?.movie;
+            const streams = [];
 
-            if (!movie || !movie.episodes) {
-                return res.status(200).json({
-                    streams: []
-                });
-            }
+            for (const server of episodes) {
 
-            // =========================
-            // DUYỆT SERVER + EPISODE
-            // =========================
+                const episodeItems = server.items || [];
 
-            for (const server of movie.episodes) {
+                for (const ep of episodeItems) {
 
-                const serverData = server.server_data || [];
+                    if (!ep.embed) continue;
 
-                for (const ep of serverData) {
+                    // Phim lẻ
+                    if (type === 'movie') {
+                        streams.push({
+                            name: `NguonC`,
+                            title: `${server.server_name} - ${ep.name}`,
+                            externalUrl: ep.embed
+                        });
+                    }
 
-                    // Phim bộ:
-                    // Stremio gửi ttID:season:episode
+                    // Phim bộ
+                    else {
+                        const epText = String(ep.name || '');
+                        const numberMatch = epText.match(/\d+/);
 
-                    if (type === 'series') {
-
-                        const wantedEpisode =
-                            Number(episode);
-
-                        const epName =
-                            String(ep.name || '');
-
-                        // Ví dụ NguonC có:
-                        // "Tập 1"
-                        // "1"
-                        // "Episode 1"
-
-                        const numberMatch =
-                            epName.match(/\d+/);
-
-                        const epNumber =
-                            numberMatch
-                                ? Number(numberMatch[0])
-                                : null;
+                        const epNum = numberMatch
+                            ? Number(numberMatch[0])
+                            : null;
 
                         if (
-                            wantedEpisode &&
-                            epNumber !== wantedEpisode
+                            !episodeNumber ||
+                            epNum === Number(episodeNumber)
                         ) {
-                            continue;
+                            streams.push({
+                                name: `NguonC`,
+                                title: `${server.server_name} - ${ep.name}`,
+                                externalUrl: ep.embed
+                            });
                         }
                     }
-
-                    if (!ep.link_m3u8) {
-                        continue;
-                    }
-
-                    streams.push({
-                        name: `NguonC`,
-                        title: `${movie.name || movieName} - ${ep.name || 'Tập'}`,
-                        url: ep.link_m3u8
-                    });
                 }
             }
 
+            return res.status(200).json({
+                streams
+            });
+
         } catch (error) {
 
-            console.error(
-                "Addon NguonC error:",
-                error
-            );
+            console.error("NguonC error:", error);
 
             return res.status(200).json({
                 streams: []
             });
         }
-
-        return res.status(200).json({
-            streams
-        });
     }
 
     return res.status(404).json({
